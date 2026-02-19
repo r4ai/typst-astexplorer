@@ -342,6 +342,7 @@ module.exports = Object.assign({
 
   output: {
     path: path.resolve(__dirname, '../out'),
+    publicPath: process.env.PUBLIC_PATH || '/',
     filename: DEV ? '[name].js' : `[name]-[contenthash]-${CACHE_BREAKER}.js`,
     chunkFilename: DEV ? '[name].js' : `[name]-[contenthash]-${CACHE_BREAKER}.js`,
   },
