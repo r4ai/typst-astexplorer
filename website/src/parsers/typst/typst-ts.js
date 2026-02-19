@@ -3,7 +3,7 @@ import pkg from '@myriaddreamin/typst.ts/package.json';
 import wasmBin from '@myriaddreamin/typst-ts-web-compiler/pkg/typst_ts_web_compiler_bg.wasm';
 import { parse as parseYaml } from 'yaml';
 
-const MAIN_FILE = '/main.typ';
+export const MAIN_FILE = '/main.typ';
 
 export default {
   ...defaultParserInterface,
@@ -15,21 +15,22 @@ export default {
   locationProps: new Set(['range', 'loc']),
 
   async loadParser(callback) {
-    require(['@myriaddreamin/typst.ts/dist/esm/compiler.mjs'], async (mod) => {
-      const compiler = mod.createTypstCompiler();
-      await compiler.init({ getModule: () => wasmBin });
-      callback(compiler);
-    });
+    loadTypstCompiler(callback);
   },
 
   async parse(compiler, code) {
-    compiler.mapShadow(MAIN_FILE, new TextEncoder().encode(code));
-    const astStr = await compiler.getAst(MAIN_FILE);
-    const rawAst = convertRawTypstAstStringToObject(astStr);
-    return convertRawTypstAstObjectToTypstAst(rawAst, code);
+    return parseRawTypstAst(compiler, code);
   },
 
   getNodeName(node) {
+    if (node && typeof node.type !== 'object') {
+      return node.type;
+    }
+
+    if (node && typeof node.s === 'string') {
+      return parseRawTypstAstSProperty(node.s).type;
+    }
+
     return node.type;
   },
 
@@ -40,7 +41,21 @@ export default {
   },
 };
 
-function convertRawTypstAstStringToObject(rawTypstAstString) {
+export function loadTypstCompiler(callback) {
+  require(['@myriaddreamin/typst.ts/dist/esm/compiler.mjs'], async (mod) => {
+    const compiler = mod.createTypstCompiler();
+    await compiler.init({ getModule: () => wasmBin });
+    callback(compiler);
+  });
+}
+
+export async function parseRawTypstAst(compiler, code) {
+  compiler.mapShadow(MAIN_FILE, new TextEncoder().encode(code));
+  const astStr = await compiler.getAst(MAIN_FILE);
+  return convertRawTypstAstStringToObject(astStr);
+}
+
+export function convertRawTypstAstStringToObject(rawTypstAstString) {
   const removeFirstLine = (input) => {
     const lines = input.split('\n');
     lines.shift();
@@ -113,7 +128,7 @@ function decodeHtmlEntities(str) {
     .replace(/&amp;/g, '&');
 }
 
-function parseRawTypstAstSProperty(s) {
+export function parseRawTypstAstSProperty(s) {
   const spanMatch = s.match(/<span[^>]*>([\s\S]+?)<\/span>/);
   if (!spanMatch) {
     throw new Error(`Failed to parse Typst AST node type from: ${s}`);
@@ -150,7 +165,7 @@ function calcOffsetFromLoc(loc, source) {
   return offset;
 }
 
-function convertRawTypstAstObjectToTypstAst(rawTypstAstObject, typstSource) {
+export function convertRawTypstAstObjectToTypstAst(rawTypstAstObject, typstSource) {
   if (rawTypstAstObject.s === undefined) {
     throw new Error("Invalid raw Typst AST object: missing 's' property");
   }
