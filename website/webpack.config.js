@@ -164,6 +164,19 @@ module.exports = Object.assign({
         include: [path.join(__dirname, 'node_modules', '@swc', 'wasm-web')],
         loader: "file-loader"
       },
+      // typst.ts ESM files use import.meta.url, handle them with the same loader
+      {
+        test: /\.mjs$/,
+        include: [path.join(__dirname, 'node_modules', '@myriaddreamin')],
+        loader: require.resolve('@open-wc/webpack-import-meta-loader'),
+      },
+      // typst-ts-web-compiler WASM binary
+      {
+        test: /\.wasm$/,
+        type: 'javascript/auto',
+        include: [path.join(__dirname, 'node_modules', '@myriaddreamin', 'typst-ts-web-compiler')],
+        loader: 'file-loader',
+      },
       // This rule is needed to make sure *.mjs files in node_modules are
       // interpreted as modules.
       {
@@ -211,6 +224,7 @@ module.exports = Object.assign({
           path.join(__dirname, 'node_modules', 'simple-html-tokenizer'),
           path.join(__dirname, 'node_modules', 'symbol-observable', 'es'),
           path.join(__dirname, 'node_modules', '@swc', 'wasm-web'),
+          path.join(__dirname, 'node_modules', '@myriaddreamin'),
           path.join(__dirname, 'node_modules', 'typescript-eslint-parser'),
           path.join(__dirname, 'node_modules', 'webidl2'),
           path.join(__dirname, 'node_modules', 'tslint'),

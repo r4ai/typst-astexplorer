@@ -1,0 +1,8 @@
+= Hello, Typst!
+
+This is *bold* and _italic_ text.
+
+$ sum_(k=0)^n k = (n(n+1))/2 $
+
+#let greet(name) = [Hello, #name!]
+#greet("World")
