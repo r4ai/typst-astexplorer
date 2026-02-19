@@ -21,6 +21,12 @@ CodeMirror.defineMode('typst', function () {
       rawFence: null,
       // block comment nesting depth
       commentDepth: 0,
+      // tracks whether a function call argument list is expected
+      expectArgs: false,
+      // tracks a possible `show` target name
+      afterShow: false,
+      // tracks control context endings after block closures
+      justClosedBlock: false,
     };
   }
 
@@ -128,6 +134,8 @@ CodeMirror.defineMode('typst', function () {
     }
     // Line comment
     if (stream.match('//')) {
+      const prev = stream.pos >= 2 ? stream.string.charAt(stream.pos - 3) : '';
+      if (prev === ':') return null;
       stream.skipToEnd();
       return 'comment';
     }
@@ -147,18 +155,24 @@ CodeMirror.defineMode('typst', function () {
 
     // Opening brace → push another code context
     if (stream.eat('{')) {
+      state.justClosedBlock = false;
+      state.afterShow = false;
       push(state, tokenizeCode);
       return 'bracket';
     }
 
     // Closing brace → pop code context
     if (stream.eat('}')) {
+      state.justClosedBlock = true;
+      state.afterShow = false;
       pop(state);
       return 'bracket';
     }
 
     // Opening bracket → enter markup context
     if (stream.eat('[')) {
+      state.justClosedBlock = false;
+      state.afterShow = false;
       push(state, tokenizeMarkupBlock);
       return 'bracket';
     }
@@ -204,14 +218,25 @@ CodeMirror.defineMode('typst', function () {
     if (stream.eat(':')) return 'punctuation';
     if (stream.eat(',')) return 'punctuation';
     if (stream.eat(';')) {
+      state.afterShow = false;
       // Semicolons end code-line contexts (e.g., #let ... ;)
       if (state.stack.length > 0 && state.stack[state.stack.length - 1] === tokenizeCodeLine) {
         pop(state);
       }
       return 'punctuation';
     }
-    if (stream.eat('(')) return 'bracket';
-    if (stream.eat(')')) return 'bracket';
+    if (stream.eat('(')) {
+      if (state.expectArgs) {
+        push(state, tokenizeArguments);
+        state.expectArgs = false;
+      }
+      state.afterShow = false;
+      return 'bracket';
+    }
+    if (stream.eat(')')) {
+      state.afterShow = false;
+      return 'bracket';
+    }
     if (stream.eat('.')) return 'punctuation';
 
     // Identifier
@@ -221,16 +246,29 @@ CodeMirror.defineMode('typst', function () {
       // Handle 'and', 'or', 'not' as operators
       if (word === 'and' || word === 'or' || word === 'not') return 'keyword';
 
-      if (keywords.has(word)) return 'keyword';
+      if (keywords.has(word)) {
+        state.afterShow = word === 'show';
+        return 'keyword';
+      }
       if (controlKeywords.has(word)) return 'keyword';
       if (constants.has(word)) return 'atom';
 
+      if (state.afterShow && stream.match(/^\s*[:.]/, false)) {
+        state.afterShow = false;
+        return 'def';
+      }
+      state.afterShow = false;
+
       // Function name if followed by ( or [
-      if (stream.match(/^\s*[([]/,  false)) return 'def';
+      if (stream.match(/^\s*[([]/, false)) {
+        state.expectArgs = true;
+        return 'def';
+      }
 
       return 'variable';
     }
 
+    state.afterShow = false;
     stream.next();
     return null;
   }
@@ -248,6 +286,79 @@ CodeMirror.defineMode('typst', function () {
       return null;
     }
     return tokenizeCode(stream, state);
+  }
+
+  // Control-flow code context: ends at newline, ] or after a closed block.
+  function tokenizeCodeControl(stream, state) {
+    if (stream.eol()) {
+      pop(state);
+      return null;
+    }
+    if (stream.peek() === ']') {
+      pop(state);
+      return null;
+    }
+    if (state.justClosedBlock) {
+      state.justClosedBlock = false;
+      pop(state);
+      return null;
+    }
+    return tokenizeCode(stream, state);
+  }
+
+  // Generic #code context that ends at whitespace.
+  function tokenizeCodeUntilSpace(stream, state) {
+    if (stream.eol()) {
+      pop(state);
+      return null;
+    }
+    if (/\s/.test(stream.peek())) {
+      pop(state);
+      return null;
+    }
+    return tokenizeCode(stream, state);
+  }
+
+  // Function argument tokenizer used for func(...)
+  function tokenizeArguments(stream, state) {
+    if (stream.eol()) return null;
+    if (stream.eat(')')) {
+      pop(state);
+      return 'bracket';
+    }
+    if (stream.eatSpace()) return null;
+
+    const common = tokenizeCommon(stream, state);
+    if (common !== null) return common;
+
+    if (stream.match(/^[a-zA-Z_][a-zA-Z0-9_-]*(?=\s*:)/)) return 'variable-2';
+    return tokenizeCode(stream, state);
+  }
+
+  function isWord(ch) {
+    return /[A-Za-z0-9_]/.test(ch);
+  }
+
+  function isEmphasisMarker(stream) {
+    const prev = stream.pos > 0 ? stream.string.charAt(stream.pos - 1) : '';
+    const next = stream.pos + 1 < stream.string.length ? stream.string.charAt(stream.pos + 1) : '';
+    return stream.sol() || stream.pos === stream.string.length - 1 || !isWord(prev) || !isWord(next);
+  }
+
+  function makeEmphasisTokenizer(marker, style) {
+    return function tokenizeEmphasis(stream, state) {
+      if (stream.eol() || stream.peek() === ']') {
+        pop(state);
+        return style;
+      }
+      if (stream.peek() === marker && isEmphasisMarker(stream)) {
+        stream.next();
+        pop(state);
+        return style;
+      }
+      stream.next();
+      return style;
+    };
   }
 
   // Markup block tokenizer: inside [...] within code
@@ -269,7 +380,7 @@ CodeMirror.defineMode('typst', function () {
     if (common !== null) return common;
 
     // Escape sequences
-    if (stream.match(/^\\([\\/\[\]{}#*_=~`$.,-]|u\{[0-9a-zA-Z]*\}?)/)) {
+    if (stream.match(/^\\([\\/[\]{}#*_=~`$.,-]|u\{[0-9a-zA-Z]*\}?)/)) {
       return 'string-2';
     }
     if (stream.eat('\\')) return 'meta'; // line break escape
@@ -305,6 +416,18 @@ CodeMirror.defineMode('typst', function () {
 
     // Symbol: :name:
     if (stream.match(/^:([a-zA-Z0-9]+:)+/)) return 'atom';
+
+    // Bold / italic
+    if (stream.peek() === '*' && isEmphasisMarker(stream)) {
+      stream.next();
+      push(state, makeEmphasisTokenizer('*', 'strong'));
+      return 'strong';
+    }
+    if (stream.peek() === '_' && isEmphasisMarker(stream)) {
+      stream.next();
+      push(state, makeEmphasisTokenizer('_', 'em'));
+      return 'em';
+    }
 
     // Label  <identifier>
     if (stream.match(/^<[a-zA-Z_][a-zA-Z0-9_-]*>/)) return 'tag';
@@ -343,12 +466,13 @@ CodeMirror.defineMode('typst', function () {
         push(state, tokenizeCodeLine);
         return 'keyword';
       }
+      if (stream.match(/^(as|in)\b/)) return 'keyword';
       if (stream.match(/^(if|else)\b/)) {
-        push(state, tokenizeCode);
+        push(state, tokenizeCodeControl);
         return 'keyword';
       }
       if (stream.match(/^(for|while)\b/)) {
-        push(state, tokenizeCode);
+        push(state, tokenizeCodeControl);
         return 'keyword';
       }
       if (stream.match(/^(break|continue)\b/)) return 'keyword';
@@ -361,6 +485,7 @@ CodeMirror.defineMode('typst', function () {
       // #funcname( or #funcname[
       if (stream.match(/^[a-zA-Z_][a-zA-Z0-9_-]*!?(?=[([])/, false)) {
         stream.match(/^[a-zA-Z_][a-zA-Z0-9_-]*!?/);
+        state.expectArgs = true;
         return 'def';
       }
 
@@ -369,7 +494,8 @@ CodeMirror.defineMode('typst', function () {
         return 'variable';
       }
 
-      // Bare #, fall through as meta
+      // Generic #code until whitespace.
+      push(state, tokenizeCodeUntilSpace);
       return 'meta';
     }
 
@@ -393,6 +519,9 @@ CodeMirror.defineMode('typst', function () {
         stack: state.stack.slice(),
         rawFence: state.rawFence,
         commentDepth: state.commentDepth,
+        expectArgs: state.expectArgs,
+        afterShow: state.afterShow,
+        justClosedBlock: state.justClosedBlock,
       };
     },
 
