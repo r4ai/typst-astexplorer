@@ -37,6 +37,9 @@ jobs:
         working-directory: website
         run: yarn build
 
+      - name: Inject revision
+        run: ./scripts/inject-rev.sh out/index.html
+
       - name: Copy static files
         run: |
           cp CNAME out/CNAME
