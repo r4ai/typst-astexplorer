@@ -184,6 +184,34 @@ module.exports = Object.assign({
         include: /node_modules/,
         type: 'javascript/auto',
       },
+      // typst.ts emits class fields that webpack@4 cannot parse.
+      // Force-transpile this package to a webpack@4-compatible syntax.
+      {
+        test: /\.(jsx?|mjs)$/,
+        type: 'javascript/auto',
+        include: [
+          path.join(__dirname, 'node_modules', '@myriaddreamin'),
+        ],
+        loader: 'babel-loader',
+        options: {
+          babelrc: false,
+          presets: [
+            [
+              require.resolve('@babel/preset-env'),
+              {
+                targets: {
+                  ie: '11',
+                },
+                modules: false,
+              },
+            ],
+            require.resolve('@babel/preset-react'),
+          ],
+          plugins: [
+            require.resolve('@babel/plugin-transform-runtime'),
+          ],
+        },
+      },
       {
         test: /\.(jsx?|mjs)$/,
         type: 'javascript/auto',
@@ -224,7 +252,6 @@ module.exports = Object.assign({
           path.join(__dirname, 'node_modules', 'simple-html-tokenizer'),
           path.join(__dirname, 'node_modules', 'symbol-observable', 'es'),
           path.join(__dirname, 'node_modules', '@swc', 'wasm-web'),
-          path.join(__dirname, 'node_modules', '@myriaddreamin'),
           path.join(__dirname, 'node_modules', 'typescript-eslint-parser'),
           path.join(__dirname, 'node_modules', 'webidl2'),
           path.join(__dirname, 'node_modules', 'tslint'),
@@ -295,6 +322,19 @@ module.exports = Object.assign({
   },
 
   plugins: plugins,
+
+  resolve: {
+    alias: {
+      '@myriaddreamin/typst-ts-web-compiler$': path.join(
+        __dirname,
+        'node_modules',
+        '@myriaddreamin',
+        'typst-ts-web-compiler',
+        'pkg',
+        'wasm-pack-shim.mjs',
+      ),
+    },
+  },
 
   entry: {
     app: './src/app.js',
