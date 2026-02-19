@@ -1,6 +1,7 @@
 import defaultParserInterface from '../utils/defaultParserInterface';
 import pkg from '@myriaddreamin/typst.ts/package.json';
 import wasmBin from '@myriaddreamin/typst-ts-web-compiler/pkg/typst_ts_web_compiler_bg.wasm';
+import { parse as parseYaml } from 'yaml';
 
 const MAIN_FILE = '/main.typ';
 
@@ -11,7 +12,7 @@ export default {
   displayName: 'typst.ts',
   version: pkg.version,
   homepage: 'https://github.com/Myriad-Dreamin/typst.ts',
-  locationProps: new Set(['range']),
+  locationProps: new Set(['range', 'loc']),
 
   async loadParser(callback) {
     require(['@myriaddreamin/typst.ts/dist/esm/compiler.mjs'], async (mod) => {
@@ -24,11 +25,12 @@ export default {
   async parse(compiler, code) {
     compiler.mapShadow(MAIN_FILE, new TextEncoder().encode(code));
     const astStr = await compiler.getAst(MAIN_FILE);
-    return parseAstString(astStr);
+    const rawAst = convertRawTypstAstStringToObject(astStr);
+    return convertRawTypstAstObjectToTypstAst(rawAst, code);
   },
 
   getNodeName(node) {
-    return node.kind;
+    return node.type;
   },
 
   nodeToRange(node) {
@@ -38,40 +40,139 @@ export default {
   },
 };
 
-// Convert the indented text tree returned by getAst() into a JS object tree.
-function parseAstString(str) {
-  const lines = str.split('\n').filter(l => l.trim());
-  const root = { kind: 'root', children: [] };
-  const stack = [{ node: root, indent: -1 }];
+function convertRawTypstAstStringToObject(rawTypstAstString) {
+  const removeFirstLine = (input) => {
+    const lines = input.split('\n');
+    lines.shift();
+    return lines.join('\n');
+  };
 
-  for (const line of lines) {
-    const indent = line.search(/\S/);
-    const content = line.trim();
+  const escapeYamlValues = (yamlString) => {
+    return yamlString
+      .split('\n')
+      .reduce((acc, line) => {
+        if (!/^\s*(path:|ast:|- s: |s: |c:)/.test(line)) {
+          if (acc.length > 0) {
+            acc[acc.length - 1] = `${acc[acc.length - 1].slice(0, -1)}\\n${line}"`;
+          }
+          return acc;
+        }
+        const [key, ...rest] = line.split(':');
+        if (rest[0] === '') {
+          acc.push(line);
+          return acc;
+        }
+        const value = rest.join(':').trim();
+        acc.push(`${key}: "${value}"`);
+        return acc;
+      }, [])
+      .join('\n');
+  };
 
-    // "NodeKind [start..end]" or "NodeKind: text" format
-    const rangeMatch = content.match(/^(\w+)\s+\[(\d+)\.\.(\d+)\](.*)$/);
-    const textMatch  = content.match(/^(\w+):\s*(.+)$/);
+  const escapedRawTypstAstYamlString = escapeYamlValues(
+    removeFirstLine(rawTypstAstString),
+  );
 
-    let node;
-    if (rangeMatch) {
-      node = {
-        kind: rangeMatch[1],
-        range: [parseInt(rangeMatch[2]), parseInt(rangeMatch[3])],
-        children: [],
-      };
-      if (rangeMatch[4].trim()) node.text = rangeMatch[4].trim();
-    } else if (textMatch) {
-      node = { kind: textMatch[1], text: textMatch[2], children: [] };
-    } else {
-      node = { kind: content, children: [] };
-    }
+  const parsed = parseYaml(escapedRawTypstAstYamlString);
 
-    while (stack.length > 1 && stack[stack.length - 1].indent >= indent) {
-      stack.pop();
-    }
-    stack[stack.length - 1].node.children.push(node);
-    stack.push({ node, indent });
+  if (parsed.ast.c === null) {
+    parsed.ast.c = [];
   }
 
-  return root.children.length === 1 ? root.children[0] : root;
+  return parsed.ast;
+}
+
+function extractRawSourceByLocation(typstSource, location) {
+  const { start, end } = location;
+  const lines = typstSource.split('\n');
+
+  const targetLines = lines.slice(start.line - 1, end.line);
+  const targetLinesFirst = targetLines[0].slice(start.column);
+  const targetLinesMiddle = targetLines.slice(1, -1);
+  const targetLinesLast = targetLines[targetLines.length - 1].slice(0, end.column);
+
+  let result;
+  if (start.line === end.line) {
+    result = targetLinesFirst.slice(0, end.column - start.column);
+  } else {
+    result = targetLinesFirst;
+    if (targetLinesMiddle.length > 0) {
+      result += `\n${targetLinesMiddle.join('\n')}`;
+    }
+    result += `\n${targetLinesLast}`;
+  }
+
+  return result;
+}
+
+function decodeHtmlEntities(str) {
+  return str
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&');
+}
+
+function parseRawTypstAstSProperty(s) {
+  const spanMatch = s.match(/<span[^>]*>([\s\S]+?)<\/span>/);
+  if (!spanMatch) {
+    throw new Error(`Failed to parse Typst AST node type from: ${s}`);
+  }
+  const type = decodeHtmlEntities(spanMatch[1]);
+
+  const locMatch = s.match(/&lt;(\d+):(\d+)~(\d+):(\d+)&gt;/);
+  if (!locMatch) {
+    return { type };
+  }
+
+  return {
+    type,
+    loc: {
+      start: {
+        line: parseInt(locMatch[1], 10),
+        column: parseInt(locMatch[2], 10),
+      },
+      end: {
+        line: parseInt(locMatch[3], 10),
+        column: parseInt(locMatch[4], 10),
+      },
+    },
+  };
+}
+
+function calcOffsetFromLoc(loc, source) {
+  const lines = source.split('\n');
+  let offset = 0;
+  for (let i = 0; i < loc.start.line - 1; i++) {
+    offset += lines[i].length + 1;
+  }
+  offset += loc.start.column;
+  return offset;
+}
+
+function convertRawTypstAstObjectToTypstAst(rawTypstAstObject, typstSource) {
+  if (rawTypstAstObject.s === undefined) {
+    throw new Error("Invalid raw Typst AST object: missing 's' property");
+  }
+
+  const sProperty = parseRawTypstAstSProperty(rawTypstAstObject.s);
+  const raw = sProperty.loc
+    ? extractRawSourceByLocation(typstSource, sProperty.loc)
+    : undefined;
+  const startOffset = sProperty.loc
+    ? calcOffsetFromLoc(sProperty.loc, typstSource)
+    : undefined;
+
+  return {
+    type: sProperty.type,
+    raw,
+    range:
+      startOffset !== undefined && raw !== undefined
+        ? [startOffset, startOffset + raw.length]
+        : undefined,
+    loc: sProperty.loc,
+    children: (rawTypstAstObject.c || []).map((child) =>
+      convertRawTypstAstObjectToTypstAst(child, typstSource),
+    ),
+  };
 }
